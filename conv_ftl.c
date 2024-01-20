@@ -135,7 +135,19 @@ static void init_lines(struct conv_ftl *conv_ftl)
 			.vpc = 0,
 			.pos = 0,
 			.entry = LIST_HEAD_INIT(lm->lines[i].entry),
+			.erase_cnt = 0,
+			.recent_erase_cycle = 0,
 		};
+
+		// (JE) Initialize pool (hot/cold half)
+		if (i < (lm->tt_lines) / 2)
+		{
+			lm->lines[i].is_hot_pool = true;
+		}
+		else
+		{
+			lm->lines[i].is_hot_pool = false;
+		}
 
 		/* initialize all the lines as free lines */
 		list_add_tail(&lm->lines[i].entry, &lm->free_line_list);
@@ -145,7 +157,7 @@ static void init_lines(struct conv_ftl *conv_ftl)
 	NVMEV_ASSERT(lm->free_line_cnt == lm->tt_lines);
 	lm->victim_line_cnt = 0;
 	lm->full_line_cnt = 0;
-}
+	}
 
 static void remove_lines(struct conv_ftl *conv_ftl)
 {
@@ -183,12 +195,26 @@ static struct line *get_next_free_line(struct conv_ftl *conv_ftl)
 	return curline;
 }
 
+//JE
+static struct line *get_wl_cold_mig_line(struct conv_ftl *conv_ftl)
+{
+	struct convparams *cpp = &conv_ftl->cp;
+	struct line_mgmt *lm = &conv_ftl->lm;
+	struct line *targetline = &(lm->line[cpp->hot_pool.highest_line_id]);
+
+	return targetline;
+}
+
 static struct write_pointer *__get_wp(struct conv_ftl *ftl, uint32_t io_type)
 {
 	if (io_type == USER_IO) {
 		return &ftl->wp;
 	} else if (io_type == GC_IO) {
 		return &ftl->gc_wp;
+	} else if (io_type == WL_IO) { //JE
+		return &ftl->wl_wp;
+	} else if (io_type == WL_IO_INT) {
+		return &ftl->wl_wp_int;
 	}
 
 	NVMEV_ASSERT(0);
@@ -299,6 +325,37 @@ static struct ppa get_new_page(struct conv_ftl *conv_ftl, uint32_t io_type)
 	return ppa;
 }
 
+// JE
+static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
+{
+	struct write_pointer *wp = __get_wp(conv_ftl, WL_IO);
+	struct line *curline = get_wl_cold_mig_line(conv_ftl);
+	struct ppa ppa;
+
+	// hot_pool block (line) changes
+
+	if (wp->curline.id != curline->id)
+	{		
+		*wp = (struct write_pointer){
+			.curline = curline,
+			.ch = 0,
+			.lun = 0,
+			.pg = 0,
+			.blk = curline->id,
+			.pl = 0,
+		};
+	}
+
+	ppa.ppa = 0;
+	ppa.g.ch = wp->ch;
+	ppa.g.lun = wp->lun;
+	ppa.g.pg = wp->pg;
+	ppa.g.blk = wp->blk;
+	ppa.g.pl = wp->pl;
+
+	return ppa;
+}
+
 static void init_maptbl(struct conv_ftl *conv_ftl)
 {
 	int i;
@@ -350,6 +407,9 @@ static void conv_init_ftl(struct conv_ftl *conv_ftl, struct convparams *cpp, str
 	/* initialize write pointer, this is how we allocate new pages for writes */
 	prepare_write_pointer(conv_ftl, USER_IO);
 	prepare_write_pointer(conv_ftl, GC_IO);
+	//JE
+	prepare_write_pointer(conv_ftl, WL_IO); 
+	//prepare_write_pointer(conv_ftl, WL_IO_INT);
 
 	init_write_flow_control(conv_ftl);
 
@@ -373,6 +433,31 @@ static void conv_init_params(struct convparams *cpp)
 	cpp->gc_thres_lines_high = 2; /* Need only two lines.(host write, gc)*/
 	cpp->enable_gc_delay = 1;
 	cpp->pba_pcent = (int)((1 + cpp->op_area_pcent) * 100);
+
+	// (JE) wl infor
+	cpp->cold_pool.highest_line_ec = 0;
+	cpp->cold_pool.lowest_line_ec = 0xFFFFFFFF; 
+	cpp->cold_pool.highest_line_id = 0xFFFFFFFF;
+	cpp->cold_pool.lowest_line_id = 0xFFFFFFFF;
+
+	cpp->hot_pool.highest_line_ec = 0;
+	cpp->hot_pool.lowest_line_ec = 0xFFFFFFFF; 
+	cpp->hot_pool.highest_line_id = 0xFFFFFFFF;
+	cpp->hot_pool.lowest_line_id = 0xFFFFFFFF;
+
+	cpp->hot_pool.lowest_recent_ec = 0xFFFFFFFF;
+	cpp->cold_pool.highest_recent_ec = 0; 
+	cpp->hot_pool.lowest_recent_id = 0xFFFFFFFF;
+	cpp->cold_pool.highest_recent_id = 0xFFFFFFFF;
+
+	cpp->wl_thres_cold_mig = 4; 
+	cpp->wl_thres_hot_adj = 8; 
+	cpp->wl_thres_cold_adj = 4; 
+
+	cpp->gc_victim_line_id = 0xFFFFFFFF;
+
+	cpp->maxEC = 0;
+	cpp->minEC = 0xFFFFFFFF;
 }
 
 void conv_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *mapped_addr,
@@ -644,6 +729,75 @@ static uint64_t gc_write_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 	return 0;
 }
 
+// JE
+static uint64_t wl_move_valid_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
+{
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct convparams *cpp = &conv_ftl->cp;
+	struct ppa new_ppa;
+	uint64_t lpn = get_rmap_ent(conv_ftl, old_ppa);
+
+	NVMEV_ASSERT(valid_lpn(conv_ftl, lpn));
+	new_ppa = get_new_page(conv_ftl, WL_IO);
+	/* update maptbl */
+	set_maptbl_ent(conv_ftl, lpn, &new_ppa);
+	/* update rmap */
+	set_rmap_ent(conv_ftl, lpn, &new_ppa);
+
+	mark_page_valid(conv_ftl, &new_ppa);
+
+	/* need to advance the write pointer here */
+	advance_write_pointer(conv_ftl, WL_IO);
+
+	struct nand_cmd wlw = {
+		.type = WL_IO,
+		.cmd = NAND_NOP,
+		.stime = 0,
+		.interleave_pci_dma = false,
+		.ppa = &new_ppa,
+	};
+	if (last_pg_in_wordline(conv_ftl, &new_ppa)) {
+		wlw.cmd = NAND_WRITE;
+		wlw.xfer_size = spp->pgsz * spp->pgs_per_oneshotpg;
+	}
+
+	ssd_advance_nand(conv_ftl->ssd, &wlw);
+}
+
+static uint64_t wl_write_cold_mig_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
+{
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct convparams *cpp = &conv_ftl->cp;
+	struct ppa new_ppa;
+	uint64_t lpn = get_rmap_ent(conv_ftl, old_ppa);
+
+	NVMEV_ASSERT(valid_lpn(conv_ftl, lpn));
+	new_ppa = get_wl_cold_mig_page(conv_ftl);
+	/* update maptbl */
+	set_maptbl_ent(conv_ftl, lpn, &new_ppa);
+	/* update rmap */
+	set_rmap_ent(conv_ftl, lpn, &new_ppa);
+
+	mark_page_valid(conv_ftl, &new_ppa);
+
+	/* need to advance the write pointer here */
+	advance_write_pointer(conv_ftl, WL_IO_INT);
+
+	struct nand_cmd wlintw = {
+		.type = WL_IO_INT,
+		.cmd = NAND_NOP,
+		.stime = 0,
+		.interleave_pci_dma = false,
+		.ppa = &new_ppa,
+	};
+	if (last_pg_in_wordline(conv_ftl, &new_ppa)) {
+		wlintw.cmd = NAND_WRITE;
+		wlintw.xfer_size = spp->pgsz * spp->pgs_per_oneshotpg;
+	}
+
+	ssd_advance_nand(conv_ftl->ssd, &wlintw);
+}
+
 static struct line *select_victim_line(struct conv_ftl *conv_ftl, bool force)
 {
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
@@ -692,7 +846,7 @@ static void clean_one_block(struct conv_ftl *conv_ftl, struct ppa *ppa)
 }
 
 /* here ppa identifies the block we want to clean */
-static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa)
+static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa, uint32_t io_type)
 {
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
 	struct convparams *cpp = &conv_ftl->cp;
@@ -703,8 +857,13 @@ static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa)
 
 	for (i = 0; i < spp->pgs_per_flashpg; i++) {
 		pg_iter = get_pg(conv_ftl->ssd, &ppa_copy);
-		/* there shouldn't be any free page in victim blocks */
-		NVMEV_ASSERT(pg_iter->status != PG_FREE);
+
+		if (GC_IO == io_type) // JE
+		{
+			/* there shouldn't be any free page in victim blocks */
+			NVMEV_ASSERT(pg_iter->status != PG_FREE);
+		}
+	
 		if (pg_iter->status == PG_VALID)
 			cnt++;
 
@@ -716,7 +875,9 @@ static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa)
 	if (cnt <= 0)
 		return;
 
-	if (cpp->enable_gc_delay) {
+	if (GC_IO == io_type) // JE
+	{
+		if (cpp->enable_gc_delay) {
 		struct nand_cmd gcr = {
 			.type = GC_IO,
 			.cmd = NAND_READ,
@@ -726,6 +887,31 @@ static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa)
 			.ppa = &ppa_copy,
 		};
 		completed_time = ssd_advance_nand(conv_ftl->ssd, &gcr);
+		}
+	}
+	else if (WL_IO == io_type) //JE
+	{
+		struct nand_cmd wlr = {
+			.type = WL_IO,
+			.cmd = NAND_READ,
+			.stime = 0,
+			.xfer_size = ssp->pgsz * cnt,
+			.interleave_pci_dma = false,
+			.ppa = &ppa_copy,
+		};
+		completed_time = ssd_advance_nand(conv_ftl->ssd, &wlr);
+	}
+	else if (WL_IO_INT == io_type)
+	{
+		struct nand_cmd wlintr = {
+			.type = WL_IO_INT,
+			.cmd = NAND_READ,
+			.stime = 0,
+			.xfer_size = ssp->pgsz * cnt,
+			.interleave_pci_dma = false,
+			.ppa = &ppa_copy,
+		};
+		completed_time = ssd_advance_nand(conv_ftl->ssd, &wlintr);
 	}
 
 	for (i = 0; i < spp->pgs_per_flashpg; i++) {
@@ -733,8 +919,20 @@ static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa)
 
 		/* there shouldn't be any free page in victim blocks */
 		if (pg_iter->status == PG_VALID) {
-			/* delay the maptbl update until "write" happens */
-			gc_write_page(conv_ftl, &ppa_copy);
+
+			if (GC_IO == io_type) // JE
+			{
+				/* delay the maptbl update until "write" happens */
+				gc_write_page(conv_ftl, &ppa_copy);
+			}
+			else if (WL_IO == io_type) //JE
+			{
+				wl_move_valid_page(conv_ftl, &ppa_copy);
+			}
+			else if (WL_IO_INT == io_type)
+			{
+				wl_write_cold_mig_page(conv_ftl, &ppa_copy);
+			}
 		}
 
 		ppa_copy.g.pg++;
@@ -745,11 +943,26 @@ static void mark_line_free(struct conv_ftl *conv_ftl, struct ppa *ppa)
 {
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct line *line = get_line(conv_ftl, ppa);
+	struct convparams *cpp = &conv_ftl->cp;
 	line->ipc = 0;
 	line->vpc = 0;
 	/* move this line to free line list */
 	list_add_tail(&line->entry, &lm->free_line_list);
 	lm->free_line_cnt++;
+
+	// (JE)
+	line->erase_cnt++;
+	line->recent_erase_cycle++;
+	
+	if (line->erase_cnt > cpp->maxEC)
+	{
+		cpp->maxEC = line->erase_cnt;
+	}
+	
+	if (line->erase_cnt < cpp->minEC)
+	{
+		cpp->minEC = line->erase_cnt;
+	}
 }
 
 static int do_gc(struct conv_ftl *conv_ftl, bool force)
@@ -765,6 +978,8 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 	}
 
 	ppa.g.blk = victim_line->id;
+	//JE
+	gc_victim_line_id = victim_line->id;
 	NVMEV_DEBUG_VERBOSE("GC-ing line:%d,ipc=%d(%d),victim=%d,full=%d,free=%d\n", ppa.g.blk,
 		    victim_line->ipc, victim_line->vpc, conv_ftl->lm.victim_line_cnt,
 		    conv_ftl->lm.full_line_cnt, conv_ftl->lm.free_line_cnt);
@@ -784,7 +999,7 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 				ppa.g.lun = lun;
 				ppa.g.pl = 0;
 				lunp = get_lun(conv_ftl->ssd, &ppa);
-				clean_one_flashpg(conv_ftl, &ppa);
+				clean_one_flashpg(conv_ftl, &ppa, GC_IO);
 
 				if (flashpg == (spp->flashpgs_per_blk - 1)) {
 					struct convparams *cpp = &conv_ftl->cp;
@@ -810,8 +1025,227 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 
 	/* update line status */
 	mark_line_free(conv_ftl, &ppa);
+	//JE
+	gc_victim_line_id = 0xFFFFFFFF;
 
 	return 0;
+}
+
+// (JE)
+void update_pool_mgmt(struct conv_ftl *conv_ftl)
+{
+	struct line_mgmt *lm = &conv_ftl->lm;
+	struct convparams *cpp = &conv_ftl->cp;
+
+	for (int i = 0; i < lm->tt_lines; i++) 
+	{
+		// If line is in GC or write op -> skip
+		struct write_pointer *wp = __get_wp(conv_ftl, USER_IO);
+		if (wp->curline.id == i) continue;
+
+		struct write_pointer *wp_gc = __get_wp(conv_ftl, GC_IO);
+		if (wp_gc->curline.id == i) continue;
+
+		if (cpp->gc_victim_line_id == i) continue;
+
+
+		if (lm->lines[i].is_hot_pool)
+		{
+			if (lm->lines[i].erase_cnt > cpp->hot_pool.highest_line_ec)
+			{
+				cpp->hot_pool.highest_line_ec = lm->lines[i].erase_cnt;
+				cpp->hot_pool.highest_line_id = i;
+			}
+
+			if (lm->lines[i].erase_cnt) < cpp->hot_pool.lowest_line_ec)
+			{
+				cpp->hot_pool.lowest_line_ec = lm->lines[i].erase_cnt;
+				cpp->hot_pool_lowest_line_id = i;
+			}
+
+			if (lm->lines[i].recent_erase_cycle < cpp->hot_pool.lowest_recent_ec)
+			{
+				cpp->hot_pool.lowest_recent_ec = lm->lines[i].recent_erase_cycle;
+				cpp->hot_pool.lowest_recent_id = i;
+			}
+		}
+		else
+		{
+			if (lm->lines[i].erase_cnt > cpp->cold_pool.highest_line_ec)
+			{
+				cpp->cold_pool.highest_line_ec = lm->lines[i].erase_cnt;
+				cpp->cold_pool.highest_line_id = i;
+			}
+
+			if (lm->lines[i].erase_cnt < cpp->cold_pool.lowest_line_ec)
+			{
+				cpp->cold_pool.lowest_line_ec = lm->lines[i].erase_cnt;
+				cpp->cold_pool.lowest_line_id = i;
+			}
+
+			if (lm->lines[i].recent_erase_cycle > cpp->cold_pool.highest_recent_ec)
+			{
+				cpp->cold_pool.highest_recent_ec = lm->lines[i].recent_erase_cycle;
+				cpp->cold_pool.highest_recent_id = i;
+			}
+		}
+	}
+}
+
+bool check_cold_data_migration(struct conv_ftl *conv_ftl)
+{
+	bool trigger_wl = false;
+	struct convparams *cpp = &conv_ftl->cp;
+
+	if (cpp->hot_pool.highest_line_ec - cpp->cold_pool.lowest_line_ec > cpp->wl_thres_cold_mig )
+	{
+		trigger_wl = true;
+	}
+
+	return trigger_wl;
+}
+
+vold do_cold_data_migration(struct conv_ftl *conv_ftl)
+{
+	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct convparams *cpp = &conv_ftl->cp;
+	struct line_mgmt *lm = &conv_ftl->lm;
+	struct ppa ppa;
+	
+
+	// 1) copy valid data in hot pool to a different block 
+	// 2) erase 1) block
+	ppa.ppa = 0;
+	ppa.g.blk = cpp->hot_pool.highest_line_id;
+	for (int flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
+		
+		ppa.g.pg = flashpg * spp->pgs_per_flashpg;
+		for (int ch = 0; ch < spp->nchs; ch++) {
+			for (int lun = 0; lun < spp->luns_per_ch; lun++) {
+
+				ppa.g.ch = ch;
+				ppa.g.lun = lun;
+				ppa.g.pl = 0;
+
+				// copy_to_temp = true;
+				clean_one_flashpg(conv_ftl, &ppa, WL_IO);
+
+				if (flashpg == (spp->flashpgs_per_blk - 1)) {
+					mark_block_free(conv_ftl, &ppa);
+					struct nand_cmd wle = {
+						.type = WL_IO,
+						.cmd = NAND_ERASE,
+						.stime = 0,
+						.interleave_pci_dma = false,
+						.ppa = &ppa,
+					};
+					ssd_advance_nand(conv_ftl->ssd, &wle);
+				}
+			}
+		}
+	}
+	mark_line_free(conv_ftl, &ppa);
+
+	// 3) copy valid data in cold pool to 1) block 
+	// 4) erase 3) block
+	ppa.ppa = 0; 
+	ppa.g.blk = cpp->cold_pool.lowest_line_id;
+	for (int flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
+		
+		ppa.g.pg = flashpg * spp->pgs_per_flashpg;
+		for (int ch = 0; ch < spp->nchs; ch++) {
+			for (int lun = 0; lun < spp->luns_per_ch; lun++) {
+
+				ppa.g.ch = ch;
+				ppa.g.lun = lun;
+				ppa.g.pl = 0;
+
+				clean_one_flashpg(conv_ftl, &ppa, WL_IO_INT);
+
+				if (flashpg == (spp->flashpgs_per_blk - 1)) {
+					mark_block_free(conv_ftl, &ppa);
+					struct nand_cmd wlinte = {
+						.type = WL_IO_INT,
+						.cmd = NAND_ERASE,
+						.stime = 0,
+						.interleave_pci_dma = false,
+						.ppa = &ppa,
+					};
+					ssd_advance_nand(conv_ftl->ssd, &wlinte);
+				}
+			}
+		}
+	}
+	mark_line_free(conv_ftl, &ppa);
+
+	// 5) swap oldest block in hot pool and youngest block in cold pool 
+	lm->lines[cpp->hot_pool.highest_line_id].is_hot_pool = false;
+	lm->lines[cpp->cold_pool.lowest_line_id].is_hot_pool = true;
+
+	// 6) clear recent erase cycle to 0 when the block is moved to Cold Pool
+	lm->lines[cpp->host_pool.highest_line_id].recent_erase_cycle = 0;
+}
+
+bool check_cold_pool_adjustment(struct conv_ftl *conv_ftl)
+{
+	bool trigger_wl = false;
+	struct convparams *cpp = &conv_ftl->cp;
+
+	if (cpp->cold_pool.highest_recent_ec - cpp->hot_pool.lowest_recent_ec > cpp->wl_thres_cold_adj)
+	{
+		trigger_wl = true;
+	}
+
+	return trigger_wl;
+}
+
+void do_cold_pool_adjustment(struct conv_ftl *conv_ftl)
+{
+	// Move the block with the largest ECC in cold pool to hot pool 
+	lm->lines[cpp->cold_pool.highest_recent_id].is_hot_pool = true;
+}
+
+bool check_hot_pool_adjustment(struct conv_ftl *conv_ftl)
+{
+	bool trigger_wl = false;
+	struct convparams *cpp = &conv_ftl->cp;
+
+	if (cpp->hot_pool.highest_line_ec - cpp->hot_pool.lowest_line_ec > cpp->wl_thres_hot_adj)
+	{
+		trigger_wl = true;
+	}
+
+	return trigger_wl;
+}
+
+void do_hot_pool_adjustment(struct conv_ftl *conv_ftl)
+{
+	// Migrate the youngest block in hot pool to cold pool 
+	lm->lines[cpp->hot_pool.lowest_line_id].is_hot_pool = false;
+}
+
+void do_wl(struct conv_ftl *conv_ftl)
+{
+	// update pool mgmt 
+	update_pool_mgmt(conv_ftl);
+
+	// check cold data migration 
+	if (check_cold_data_migration(conv_ftl))
+	{
+		do_cold_data_migration(conv_ftl);
+	}
+	
+	// check cold pool adj
+	if (check_cold_pool_adjustment(conv_ftl))
+	{
+		do_cold_pool_adjustment(conv_ftl);
+	}
+
+	// check hot pool adj
+	if (check_hot_pool_adjustment(conv_ftl))
+	{
+		do_hot_pool_adjustment(conv_ftl);
+	}
 }
 
 static void foreground_gc(struct conv_ftl *conv_ftl)
@@ -820,6 +1254,7 @@ static void foreground_gc(struct conv_ftl *conv_ftl)
 		NVMEV_DEBUG_VERBOSE("should_gc_high passed");
 		/* perform GC here until !should_gc(conv_ftl) */
 		do_gc(conv_ftl, true);
+		do_wl(conv_ftl); // JE
 	}
 }
 

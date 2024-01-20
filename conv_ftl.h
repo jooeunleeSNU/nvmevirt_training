@@ -8,6 +8,20 @@
 #include "ssd_config.h"
 #include "ssd.h"
 
+// (JE)
+struct wl_pool_mgmt
+{
+	uint32_t highest_line_ec;
+	uint32_t highest_line_id;
+	uint32_t lowest_line_ec;
+	uint32_t lowest_line_id;
+
+	uint32_t highest_recent_ec;
+	uint32_t highest_recent_id;
+	uint32_t lowest_recent_ec;
+	uint32_t lowest_recent_id;
+}
+
 struct convparams {
 	uint32_t gc_thres_lines;
 	uint32_t gc_thres_lines_high;
@@ -15,15 +29,35 @@ struct convparams {
 
 	double op_area_pcent;
 	int pba_pcent; /* (physical space / logical space) * 100*/
+
+	// (JE) WL
+	struct wl_pool_mgmt hot_pool;
+	struct wl_pool_mgmt cold_pool;
+
+	uint32_t wl_thres_cold_mig; // Cold Data Mighration threshold
+	uint32_t wl_thres_hot_adj; 
+	uint32_t wl_thres_cold_adj; 
+
+	// (JE) GC victim line id
+	uint32_t gc_victim_line_id;
+
+	// for debug 
+	uint32_t maxEC;
+	uint32_t minEC;
 };
 
 struct line {
 	int id; /* line id, the same as corresponding block id */
 	int ipc; /* invalid page count in this line */
 	int vpc; /* valid page count in this line */
-	struct list_head entry;
+	struct list_head entry; 
 	/* position in the priority queue for victim lines */
-	size_t pos;
+	size_t pos; 
+
+	// (JE) for WL 
+	int erase_cnt;
+	int recent_erase_cycle;
+	bool is_hot_pool;	
 };
 
 /* wp: record next write addr */
@@ -65,6 +99,10 @@ struct conv_ftl {
 	struct write_pointer gc_wp;
 	struct line_mgmt lm;
 	struct write_flow_control wfc;
+
+	// JE
+	struct write_pointer wl_wp;
+	struct write_pointer wl_wp_int;
 };
 
 void conv_init_namespace(struct nvmev_ns *ns, uint32_t id, uint64_t size, void *mapped_addr,
