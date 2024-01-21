@@ -207,7 +207,7 @@ static struct line *get_wl_cold_mig_line(struct conv_ftl *conv_ftl)
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct line *targetline = &(lm->lines[cpp->hot_pool.highest_line_id]);
 
-	NVMEV_INFO("[get_wl_cold_mig_line] Hotpool Highest Line Id: %x\n", cpp->hot_pool.highest_line_id);
+	NVMEV_INFO("[get_wl_cold_mig_line] Hotpool Highest Line Id: %x, targetline: %x\n", cpp->hot_pool.highest_line_id, &(lm->lines[cpp->hot_pool.highest_line_id]));
 
 	return targetline;
 }
@@ -342,11 +342,15 @@ static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 	struct line *curline = get_wl_cold_mig_line(conv_ftl);
 	struct ppa ppa;
 	
-	NVMEV_ASSERT(wp);
 	NVMEV_ASSERT(curline);
 
 	list_del_init(&curline->entry);
 	lm->free_line_cnt--;
+
+	if (0 == wp)
+	{
+		NVMEV_INFO("HERE!!\n");
+	}
 
 	NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id: %x\n", wp->curline->id, curline->id);
 
