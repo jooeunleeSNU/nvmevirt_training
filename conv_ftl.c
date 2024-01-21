@@ -348,7 +348,7 @@ static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 	list_del_init(&curline->entry);
 	lm->free_line_cnt--;
 
-	NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id\n", wp->curline->id, curline->id);
+	NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id: %x\n", wp->curline->id, curline->id);
 
 	// hot_pool block (line) changes
 	if (wp->curline->id != curline->id)
@@ -363,7 +363,7 @@ static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 		};
 	}
 
-	NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id\n", wp->curline->id, curline->id);
+	NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id: %x\n", wp->curline->id, curline->id);
 
 	ppa.ppa = 0;
 	ppa.g.ch = wp->ch;
