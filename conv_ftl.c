@@ -115,6 +115,7 @@ static void init_lines(struct conv_ftl *conv_ftl)
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct line *line;
 	int i;
+	int hot_count = 0, cold_count = 0;
 
 	lm->tt_lines = spp->blks_per_pl;
 	NVMEV_ASSERT(lm->tt_lines == spp->tt_lines);
@@ -143,10 +144,12 @@ static void init_lines(struct conv_ftl *conv_ftl)
 		if (i < (lm->tt_lines) / 2)
 		{
 			lm->lines[i].is_hot_pool = true;
+			hot_count++;
 		}
 		else
 		{
 			lm->lines[i].is_hot_pool = false;
+			cold_count++;
 		}
 
 		/* initialize all the lines as free lines */
@@ -157,7 +160,9 @@ static void init_lines(struct conv_ftl *conv_ftl)
 	NVMEV_ASSERT(lm->free_line_cnt == lm->tt_lines);
 	lm->victim_line_cnt = 0;
 	lm->full_line_cnt = 0;
-	}
+
+	NVMEV_INFO("hot pool count: %d, cold pool count: %d\n", hot_count, cold_count);
+}
 
 static void remove_lines(struct conv_ftl *conv_ftl)
 {
@@ -1111,7 +1116,7 @@ void do_cold_data_migration(struct conv_ftl *conv_ftl)
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct ppa ppa;
 	int flashpg, ch, lun;
-	
+
 	struct nand_cmd wle = {
 		.type = WL_IO,
 		.cmd = NAND_ERASE,
@@ -1141,7 +1146,6 @@ void do_cold_data_migration(struct conv_ftl *conv_ftl)
 				ppa.g.lun = lun;
 				ppa.g.pl = 0;
 
-				// copy_to_temp = true;
 				clean_one_flashpg(conv_ftl, &ppa, WL_IO);
 
 				if (flashpg == (spp->flashpgs_per_blk - 1)) {
@@ -1228,6 +1232,18 @@ void do_hot_pool_adjustment(struct conv_ftl *conv_ftl)
 
 	// Migrate the youngest block in hot pool to cold pool 
 	lm->lines[cpp->hot_pool.lowest_line_id].is_hot_pool = false;
+}
+
+void print_line_info(struct conv_ftl *conv_ftl)
+{
+	struct line_mgmt *lm = &conv_ftl->lm;
+	int i;
+
+	for (i = 0; i < lm->tt_lines; i++) 
+	{
+		NVMEV_INFO("isHot? %d, EC Count: %x in line: %x\n",
+			lm->lines[i].is_hot_pool, lm->lines[i].erase_cnt, i);
+	}
 }
 
 void do_wl(struct conv_ftl *conv_ftl)
