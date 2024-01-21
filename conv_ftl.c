@@ -333,7 +333,7 @@ static struct ppa get_new_page(struct conv_ftl *conv_ftl, uint32_t io_type)
 // JE
 static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 {
-	struct write_pointer *wp = __get_wp(conv_ftl, WL_IO);
+	struct write_pointer *wp = __get_wp(conv_ftl, WL_IO_INT);
 	struct line *curline = get_wl_cold_mig_line(conv_ftl);
 	struct ppa ppa;
 
