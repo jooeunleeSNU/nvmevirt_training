@@ -343,20 +343,30 @@ static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 	struct ppa ppa;
 	
 	NVMEV_ASSERT(curline);
+	NVMEV_ASSERT(wp);
 
 	list_del_init(&curline->entry);
 	lm->free_line_cnt--;
 
-	if (0 == wp)
+	if (wp->curline)
 	{
-		NVMEV_INFO("HERE!!\n");
+		NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id: %x\n", wp->curline->id, curline->id);
+
+		// hot_pool block (line) changes
+		if (wp->curline->id != curline->id)
+		{		
+			*wp = (struct write_pointer){
+				.curline = curline,
+				.ch = 0,
+				.lun = 0,
+				.pg = 0,
+				.blk = curline->id,
+				.pl = 0,
+			};
+		}
 	}
-
-	NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id: %x\n", wp->curline->id, curline->id);
-
-	// hot_pool block (line) changes
-	if (wp->curline->id != curline->id)
-	{		
+	else
+	{
 		*wp = (struct write_pointer){
 			.curline = curline,
 			.ch = 0,
