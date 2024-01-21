@@ -736,6 +736,13 @@ void wl_move_valid_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 	struct convparams *cpp = &conv_ftl->cp;
 	struct ppa new_ppa;
 	uint64_t lpn = get_rmap_ent(conv_ftl, old_ppa);
+	struct nand_cmd wlw = {
+		.type = WL_IO,
+		.cmd = NAND_NOP,
+		.stime = 0,
+		.interleave_pci_dma = false,
+		.ppa = &new_ppa,
+	};
 
 	NVMEV_ASSERT(valid_lpn(conv_ftl, lpn));
 	new_ppa = get_new_page(conv_ftl, WL_IO);
@@ -749,13 +756,6 @@ void wl_move_valid_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 	/* need to advance the write pointer here */
 	advance_write_pointer(conv_ftl, WL_IO);
 
-	struct nand_cmd wlw = {
-		.type = WL_IO,
-		.cmd = NAND_NOP,
-		.stime = 0,
-		.interleave_pci_dma = false,
-		.ppa = &new_ppa,
-	};
 	if (last_pg_in_wordline(conv_ftl, &new_ppa)) {
 		wlw.cmd = NAND_WRITE;
 		wlw.xfer_size = spp->pgsz * spp->pgs_per_oneshotpg;
@@ -770,6 +770,13 @@ void wl_write_cold_mig_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 	struct convparams *cpp = &conv_ftl->cp;
 	struct ppa new_ppa;
 	uint64_t lpn = get_rmap_ent(conv_ftl, old_ppa);
+	struct nand_cmd wlintw = {
+		.type = WL_IO_INT,
+		.cmd = NAND_NOP,
+		.stime = 0,
+		.interleave_pci_dma = false,
+		.ppa = &new_ppa,
+	};
 
 	NVMEV_ASSERT(valid_lpn(conv_ftl, lpn));
 	new_ppa = get_wl_cold_mig_page(conv_ftl);
@@ -783,13 +790,6 @@ void wl_write_cold_mig_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 	/* need to advance the write pointer here */
 	advance_write_pointer(conv_ftl, WL_IO_INT);
 
-	struct nand_cmd wlintw = {
-		.type = WL_IO_INT,
-		.cmd = NAND_NOP,
-		.stime = 0,
-		.interleave_pci_dma = false,
-		.ppa = &new_ppa,
-	};
 	if (last_pg_in_wordline(conv_ftl, &new_ppa)) {
 		wlintw.cmd = NAND_WRITE;
 		wlintw.xfer_size = spp->pgsz * spp->pgs_per_oneshotpg;
@@ -1037,19 +1037,16 @@ void update_pool_mgmt(struct conv_ftl *conv_ftl)
 {
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct convparams *cpp = &conv_ftl->cp;
+	struct write_pointer *wp = __get_wp(conv_ftl, USER_IO);
+	struct write_pointer *wp_gc = __get_wp(conv_ftl, GC_IO);
 	int i;
 
 	for (i = 0; i < lm->tt_lines; i++) 
 	{
-		// If line is in GC or write op -> skip
-		struct write_pointer *wp = __get_wp(conv_ftl, USER_IO);
+		// If line is in GC or write op -> skip	
 		if (wp->curline->id == i) continue;
-
-		struct write_pointer *wp_gc = __get_wp(conv_ftl, GC_IO);
-		if (wp_gc->curline->id == i) continue;
-
-		if (cpp->gc_victim_line_id == i) continue;
-
+		else if (wp_gc->curline->id == i) continue;
+		else if (cpp->gc_victim_line_id == i) continue;
 
 		if (lm->lines[i].is_hot_pool)
 		{
@@ -1115,6 +1112,20 @@ void do_cold_data_migration(struct conv_ftl *conv_ftl)
 	struct ppa ppa;
 	int flashpg, ch, lun;
 	
+	struct nand_cmd wle = {
+		.type = WL_IO,
+		.cmd = NAND_ERASE,
+		.stime = 0,
+		.interleave_pci_dma = false,
+		.ppa = &ppa,
+	};
+	struct nand_cmd wlinte = {
+		.type = WL_IO_INT,
+		.cmd = NAND_ERASE,
+		.stime = 0,
+		.interleave_pci_dma = false,
+		.ppa = &ppa,
+	};
 
 	// 1) copy valid data in hot pool to a different block 
 	// 2) erase 1) block
@@ -1134,14 +1145,7 @@ void do_cold_data_migration(struct conv_ftl *conv_ftl)
 				clean_one_flashpg(conv_ftl, &ppa, WL_IO);
 
 				if (flashpg == (spp->flashpgs_per_blk - 1)) {
-					mark_block_free(conv_ftl, &ppa);
-					struct nand_cmd wle = {
-						.type = WL_IO,
-						.cmd = NAND_ERASE,
-						.stime = 0,
-						.interleave_pci_dma = false,
-						.ppa = &ppa,
-					};
+					mark_block_free(conv_ftl, &ppa);					
 					ssd_advance_nand(conv_ftl->ssd, &wle);
 				}
 			}
@@ -1167,13 +1171,6 @@ void do_cold_data_migration(struct conv_ftl *conv_ftl)
 
 				if (flashpg == (spp->flashpgs_per_blk - 1)) {
 					mark_block_free(conv_ftl, &ppa);
-					struct nand_cmd wlinte = {
-						.type = WL_IO_INT,
-						.cmd = NAND_ERASE,
-						.stime = 0,
-						.interleave_pci_dma = false,
-						.ppa = &ppa,
-					};
 					ssd_advance_nand(conv_ftl->ssd, &wlinte);
 				}
 			}
