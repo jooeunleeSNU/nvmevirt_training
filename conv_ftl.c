@@ -1101,6 +1101,9 @@ bool check_cold_data_migration(struct conv_ftl *conv_ftl)
 	bool trigger_wl = false;
 	struct convparams *cpp = &conv_ftl->cp;
 
+	NVMEV_INFO("[Check Cold Data Migration] HotPool Highest: %x, ColdPool Lowest: %x, Threshold: %x\n",
+		cpp->hot_pool.highest_line_ec, cpp->cold_pool.lowest_line_ec, cpp->wl_thres_cold_mig);
+
 	if (cpp->hot_pool.highest_line_ec - cpp->cold_pool.lowest_line_ec > cpp->wl_thres_cold_mig )
 	{
 		trigger_wl = true;
@@ -1188,12 +1191,18 @@ void do_cold_data_migration(struct conv_ftl *conv_ftl)
 
 	// 6) clear recent erase cycle to 0 when the block is moved to Cold Pool
 	lm->lines[cpp->hot_pool.highest_line_id].recent_erase_cycle = 0;
+
+	NVMEV_INFO("[Cold Data Migration Done] HotPool LineId: %x, ColdPool LineId: %x\n",
+			cpp->hot_pool.highest_line_id, cpp->cold_pool.lowest_line_id);
 }
 
 bool check_cold_pool_adjustment(struct conv_ftl *conv_ftl)
 {
 	bool trigger_wl = false;
 	struct convparams *cpp = &conv_ftl->cp;
+
+	NVMEV_INFO("[Check Cold Pool Adj] HotPool Highest: %x, ColdPool Lowest: %x, Threshold: %x\n",
+			cpp->cold_pool.highest_recent_ec, cpp->hot_pool.lowest_recent_ec, cpp->wl_thres_cold_adj);
 
 	if (cpp->cold_pool.highest_recent_ec - cpp->hot_pool.lowest_recent_ec > cpp->wl_thres_cold_adj)
 	{
@@ -1210,12 +1219,18 @@ void do_cold_pool_adjustment(struct conv_ftl *conv_ftl)
 
 	// Move the block with the largest ECC in cold pool to hot pool 
 	lm->lines[cpp->cold_pool.highest_recent_id].is_hot_pool = true;
+
+	NVMEV_INFO("[Cold Pool Adj Done] Line Id: %x, isHotPool: %x\n",
+			cpp->cold_pool.highest_recent_id, lm->lines[cpp->cold_pool.highest_recent_id].is_hot_pool);
 }
 
 bool check_hot_pool_adjustment(struct conv_ftl *conv_ftl)
 {
 	bool trigger_wl = false;
 	struct convparams *cpp = &conv_ftl->cp;
+
+	NVMEV_INFO("[Check Hot Pool Adj] HotPool Highest: %x, HotPool Lowest: %x, Threshold: %x\n",
+			cpp->hot_pool.highest_line_ec, cpp->hot_pool.lowest_line_ec, cpp->wl_thres_hot_adj);
 
 	if (cpp->hot_pool.highest_line_ec - cpp->hot_pool.lowest_line_ec > cpp->wl_thres_hot_adj)
 	{
@@ -1232,6 +1247,9 @@ void do_hot_pool_adjustment(struct conv_ftl *conv_ftl)
 
 	// Migrate the youngest block in hot pool to cold pool 
 	lm->lines[cpp->hot_pool.lowest_line_id].is_hot_pool = false;
+
+	NVMEV_INFO("[Hot Pool Adj Done] Line Id: %x, isHotPool: %x\n",
+			cpp->hot_pool.lowest_line_id, lm->lines[cpp->hot_pool.lowest_line_id].is_hot_pool);
 }
 
 void print_line_info(struct conv_ftl *conv_ftl)
@@ -1241,7 +1259,7 @@ void print_line_info(struct conv_ftl *conv_ftl)
 
 	for (i = 0; i < lm->tt_lines; i++) 
 	{
-		NVMEV_INFO("isHot? %d, EC Count: %x in line: %x\n",
+		NVMEV_INFO("isHot? %d, EC Count: %x, in line: %x\n",
 			lm->lines[i].is_hot_pool, lm->lines[i].erase_cnt, i);
 	}
 }
