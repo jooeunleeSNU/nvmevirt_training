@@ -336,14 +336,17 @@ static struct ppa get_new_page(struct conv_ftl *conv_ftl, uint32_t io_type)
 static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 {
 	struct write_pointer *wp = __get_wp(conv_ftl, WL_IO_INT);
+	struct line_mgmt *lm = &conv_ftl->lm;
 	struct line *curline = get_wl_cold_mig_line(conv_ftl);
 	struct ppa ppa;
-
-	// hot_pool block (line) changes
-
+	
 	NVMEV_ASSERT(wp);
 	NVMEV_ASSERT(curline);
 
+	list_del_init(&curline->entry);
+	lm->free_line_cnt--;
+
+	// hot_pool block (line) changes
 	if (wp->curline->id != curline->id)
 	{		
 		*wp = (struct write_pointer){
@@ -772,6 +775,8 @@ void wl_move_valid_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 	}
 
 	ssd_advance_nand(conv_ftl->ssd, &wlw);
+
+	NVMEV_INFO("[wl_move_valid_page]\n");
 }
 
 void wl_write_cold_mig_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
@@ -787,6 +792,8 @@ void wl_write_cold_mig_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 		.interleave_pci_dma = false,
 		.ppa = &new_ppa,
 	};
+
+	NVMEV_INFO("[wl_write_cold_mig_page]\n");
 
 	NVMEV_ASSERT(valid_lpn(conv_ftl, lpn));
 	new_ppa = get_wl_cold_mig_page(conv_ftl);
@@ -806,6 +813,8 @@ void wl_write_cold_mig_page(struct conv_ftl *conv_ftl, struct ppa *old_ppa)
 	}
 
 	ssd_advance_nand(conv_ftl->ssd, &wlintw);
+
+	NVMEV_INFO("[wl_write_cold_mig_page]\n");
 }
 
 static struct line *select_victim_line(struct conv_ftl *conv_ftl, bool force)
