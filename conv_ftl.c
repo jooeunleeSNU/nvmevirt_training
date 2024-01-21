@@ -200,7 +200,7 @@ static struct line *get_wl_cold_mig_line(struct conv_ftl *conv_ftl)
 {
 	struct convparams *cpp = &conv_ftl->cp;
 	struct line_mgmt *lm = &conv_ftl->lm;
-	struct line *targetline = &(lm->line[cpp->hot_pool.highest_line_id]);
+	struct line *targetline = &(lm->lines[cpp->hot_pool.highest_line_id]);
 
 	return targetline;
 }
@@ -334,7 +334,7 @@ static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 
 	// hot_pool block (line) changes
 
-	if (wp->curline.id != curline->id)
+	if (wp->curline->id != curline->id)
 	{		
 		*wp = (struct write_pointer){
 			.curline = curline,
@@ -895,7 +895,7 @@ static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa, uint32
 			.type = WL_IO,
 			.cmd = NAND_READ,
 			.stime = 0,
-			.xfer_size = ssp->pgsz * cnt,
+			.xfer_size = spp->pgsz * cnt,
 			.interleave_pci_dma = false,
 			.ppa = &ppa_copy,
 		};
@@ -969,6 +969,7 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 {
 	struct line *victim_line = NULL;
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
+	struct convparams *cpp = &conv_ftl->cp;
 	struct ppa ppa;
 	int flashpg;
 
@@ -979,7 +980,7 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 
 	ppa.g.blk = victim_line->id;
 	//JE
-	gc_victim_line_id = victim_line->id;
+	cpp->gc_victim_line_id = victim_line->id;
 	NVMEV_DEBUG_VERBOSE("GC-ing line:%d,ipc=%d(%d),victim=%d,full=%d,free=%d\n", ppa.g.blk,
 		    victim_line->ipc, victim_line->vpc, conv_ftl->lm.victim_line_cnt,
 		    conv_ftl->lm.full_line_cnt, conv_ftl->lm.free_line_cnt);
@@ -1036,15 +1037,16 @@ void update_pool_mgmt(struct conv_ftl *conv_ftl)
 {
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct convparams *cpp = &conv_ftl->cp;
+	int i;
 
-	for (int i = 0; i < lm->tt_lines; i++) 
+	for (i = 0; i < lm->tt_lines; i++) 
 	{
 		// If line is in GC or write op -> skip
 		struct write_pointer *wp = __get_wp(conv_ftl, USER_IO);
-		if (wp->curline.id == i) continue;
+		if (wp->curline->id == i) continue;
 
 		struct write_pointer *wp_gc = __get_wp(conv_ftl, GC_IO);
-		if (wp_gc->curline.id == i) continue;
+		if (wp_gc->curline->id == i) continue;
 
 		if (cpp->gc_victim_line_id == i) continue;
 
@@ -1057,10 +1059,10 @@ void update_pool_mgmt(struct conv_ftl *conv_ftl)
 				cpp->hot_pool.highest_line_id = i;
 			}
 
-			if (lm->lines[i].erase_cnt) < cpp->hot_pool.lowest_line_ec)
+			if (lm->lines[i].erase_cnt < cpp->hot_pool.lowest_line_ec)
 			{
 				cpp->hot_pool.lowest_line_ec = lm->lines[i].erase_cnt;
-				cpp->hot_pool_lowest_line_id = i;
+				cpp->hot_pool.lowest_line_id = i;
 			}
 
 			if (lm->lines[i].recent_erase_cycle < cpp->hot_pool.lowest_recent_ec)
@@ -1105,23 +1107,24 @@ bool check_cold_data_migration(struct conv_ftl *conv_ftl)
 	return trigger_wl;
 }
 
-vold do_cold_data_migration(struct conv_ftl *conv_ftl)
+void do_cold_data_migration(struct conv_ftl *conv_ftl)
 {
 	struct ssdparams *spp = &conv_ftl->ssd->sp;
 	struct convparams *cpp = &conv_ftl->cp;
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct ppa ppa;
+	int flashpg, ch, lun;
 	
 
 	// 1) copy valid data in hot pool to a different block 
 	// 2) erase 1) block
 	ppa.ppa = 0;
 	ppa.g.blk = cpp->hot_pool.highest_line_id;
-	for (int flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
+	for (flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
 		
 		ppa.g.pg = flashpg * spp->pgs_per_flashpg;
-		for (int ch = 0; ch < spp->nchs; ch++) {
-			for (int lun = 0; lun < spp->luns_per_ch; lun++) {
+		for (ch = 0; ch < spp->nchs; ch++) {
+			for (lun = 0; lun < spp->luns_per_ch; lun++) {
 
 				ppa.g.ch = ch;
 				ppa.g.lun = lun;
@@ -1150,11 +1153,11 @@ vold do_cold_data_migration(struct conv_ftl *conv_ftl)
 	// 4) erase 3) block
 	ppa.ppa = 0; 
 	ppa.g.blk = cpp->cold_pool.lowest_line_id;
-	for (int flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
+	for (flashpg = 0; flashpg < spp->flashpgs_per_blk; flashpg++) {
 		
 		ppa.g.pg = flashpg * spp->pgs_per_flashpg;
-		for (int ch = 0; ch < spp->nchs; ch++) {
-			for (int lun = 0; lun < spp->luns_per_ch; lun++) {
+		for (ch = 0; ch < spp->nchs; ch++) {
+			for (lun = 0; lun < spp->luns_per_ch; lun++) {
 
 				ppa.g.ch = ch;
 				ppa.g.lun = lun;
@@ -1183,7 +1186,7 @@ vold do_cold_data_migration(struct conv_ftl *conv_ftl)
 	lm->lines[cpp->cold_pool.lowest_line_id].is_hot_pool = true;
 
 	// 6) clear recent erase cycle to 0 when the block is moved to Cold Pool
-	lm->lines[cpp->host_pool.highest_line_id].recent_erase_cycle = 0;
+	lm->lines[cpp->hot_pool.highest_line_id].recent_erase_cycle = 0;
 }
 
 bool check_cold_pool_adjustment(struct conv_ftl *conv_ftl)
@@ -1201,6 +1204,9 @@ bool check_cold_pool_adjustment(struct conv_ftl *conv_ftl)
 
 void do_cold_pool_adjustment(struct conv_ftl *conv_ftl)
 {
+	struct line_mgmt *lm = &conv_ftl->lm;
+	struct convparams *cpp = &conv_ftl->cp;
+
 	// Move the block with the largest ECC in cold pool to hot pool 
 	lm->lines[cpp->cold_pool.highest_recent_id].is_hot_pool = true;
 }
@@ -1220,6 +1226,9 @@ bool check_hot_pool_adjustment(struct conv_ftl *conv_ftl)
 
 void do_hot_pool_adjustment(struct conv_ftl *conv_ftl)
 {
+	struct line_mgmt *lm = &conv_ftl->lm;
+	struct convparams *cpp = &conv_ftl->cp;
+	
 	// Migrate the youngest block in hot pool to cold pool 
 	lm->lines[cpp->hot_pool.lowest_line_id].is_hot_pool = false;
 }
