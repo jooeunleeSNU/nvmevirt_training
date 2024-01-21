@@ -207,7 +207,7 @@ static struct line *get_wl_cold_mig_line(struct conv_ftl *conv_ftl)
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct line *targetline = &lm->lines[cpp->hot_pool.highest_line_id];
 
-	NVMEV_INFO("[get_wl_cold_mig_line] Hotpool Highest Line Id: %x\n", cpp->hot_pool.highest_line_id);
+	NVMEV_INFO("[get_wl_cold_mig_line] Hotpool Highest Line Id: %x, targetline: %p\n", cpp->hot_pool.highest_line_id, targetline);
 
 	return targetline;
 }
