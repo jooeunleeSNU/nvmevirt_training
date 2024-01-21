@@ -253,6 +253,8 @@ static void advance_write_pointer(struct conv_ftl *conv_ftl, uint32_t io_type)
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct write_pointer *wpp = __get_wp(conv_ftl, io_type);
 
+	NVMEV_ASSERT(wpp);
+
 	NVMEV_DEBUG_VERBOSE("current wpp: ch:%d, lun:%d, pl:%d, blk:%d, pg:%d\n",
 			wpp->ch, wpp->lun, wpp->pl, wpp->blk, wpp->pg);
 
@@ -346,6 +348,8 @@ static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 	list_del_init(&curline->entry);
 	lm->free_line_cnt--;
 
+	NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id\n", wp->curline->id, curline->id);
+
 	// hot_pool block (line) changes
 	if (wp->curline->id != curline->id)
 	{		
@@ -358,6 +362,8 @@ static struct ppa get_wl_cold_mig_page(struct conv_ftl *conv_ftl)
 			.pl = 0,
 		};
 	}
+
+	NVMEV_INFO("[get_wl_cold_mig_page] wp curline Id: %x, hot curline Id\n", wp->curline->id, curline->id);
 
 	ppa.ppa = 0;
 	ppa.g.ch = wp->ch;
