@@ -756,7 +756,7 @@ static uint64_t wl_move_valid_page(struct conv_ftl *conv_ftl, struct ppa *old_pp
 		.interleave_pci_dma = false,
 		.ppa = &new_ppa,
 	};
-	if (last_pg_in_wordline(conv_ftl, &new_ppa)) {
+	if (last_pg_in_wordline(conv_ftl, &new_ppa) {
 		wlw.cmd = NAND_WRITE;
 		wlw.xfer_size = spp->pgsz * spp->pgs_per_oneshotpg;
 	}
@@ -790,7 +790,7 @@ static uint64_t wl_write_cold_mig_page(struct conv_ftl *conv_ftl, struct ppa *ol
 		.interleave_pci_dma = false,
 		.ppa = &new_ppa,
 	};
-	if (last_pg_in_wordline(conv_ftl, &new_ppa)) {
+	if (last_pg_in_wordline(conv_ftl, &new_ppa) {
 		wlintw.cmd = NAND_WRITE;
 		wlintw.xfer_size = spp->pgsz * spp->pgs_per_oneshotpg;
 	}
@@ -907,7 +907,7 @@ static void clean_one_flashpg(struct conv_ftl *conv_ftl, struct ppa *ppa, uint32
 			.type = WL_IO_INT,
 			.cmd = NAND_READ,
 			.stime = 0,
-			.xfer_size = ssp->pgsz * cnt,
+			.xfer_size = spp->pgsz * cnt,
 			.interleave_pci_dma = false,
 			.ppa = &ppa_copy,
 		};
@@ -1027,7 +1027,7 @@ static int do_gc(struct conv_ftl *conv_ftl, bool force)
 	/* update line status */
 	mark_line_free(conv_ftl, &ppa);
 	//JE
-	gc_victim_line_id = 0xFFFFFFFF;
+	cpp->gc_victim_line_id = 0xFFFFFFFF;
 
 	return 0;
 }
@@ -1228,7 +1228,7 @@ void do_hot_pool_adjustment(struct conv_ftl *conv_ftl)
 {
 	struct line_mgmt *lm = &conv_ftl->lm;
 	struct convparams *cpp = &conv_ftl->cp;
-	
+
 	// Migrate the youngest block in hot pool to cold pool 
 	lm->lines[cpp->hot_pool.lowest_line_id].is_hot_pool = false;
 }
