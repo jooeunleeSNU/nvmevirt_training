@@ -20,7 +20,7 @@ struct wl_pool_mgmt
 	uint32_t highest_recent_id;
 	uint32_t lowest_recent_ec;
 	uint32_t lowest_recent_id;
-}
+};
 
 struct convparams {
 	uint32_t gc_thres_lines;
